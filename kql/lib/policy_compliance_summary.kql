@@ -1,0 +1,19 @@
+/// lib_policy_compliance_summary
+/// Summary: Placeholder for policy compliance state summary. Actual data should be sourced from ARG policyStates in workbook wiring.
+/// Params:
+///   scopeFilter: string
+///   timeRange: timespan
+/// Output:
+///   Initiative:string, Compliant:long, NonCompliant:long, NonCompliancePct:real
+///
+/// Sample:
+/// // let scopeFilter = "/subscriptions/...";
+/// // let timeRange = 24h;
+/// // lib_policy_compliance_summary();
+datatable(Initiative:string, Compliant:long, NonCompliant:long)
+[
+    // Placeholder; workbook wiring should provide ARG data
+]
+| summarize Compliant = sum(Compliant), NonCompliant = sum(NonCompliant) by Initiative
+| extend NonCompliancePct = todouble(NonCompliant) / todouble(Compliant + NonCompliant) * 100.0
+| project Initiative, Compliant, NonCompliant, NonCompliancePct

@@ -1,0 +1,5 @@
+{
+  "require_summarize_or_bin": true,
+  "max_project_columns": 12,
+  "max_take_rows": 5000
+}

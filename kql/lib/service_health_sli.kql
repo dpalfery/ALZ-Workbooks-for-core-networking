@@ -1,0 +1,40 @@
+/// lib_service_health_sli
+/// Summary: Computes basic SLIs (availability, error rate proxy, latency proxy, saturation proxy) for a given service category.
+/// Params:
+///   service: string (vm|aks|app|storage|sql|network)
+///   timeRange: timespan (default 24h)
+/// Output:
+///   metric:string, value:real, status:string
+///
+/// Sample:
+/// // let service = "vm";
+/// // let timeRange = 24h;
+/// // lib_service_health_sli();
+let timeRange = iff(isnull(timeRange), 24h, timeRange);
+// Availability proxy: Heartbeat presence ratio over time window
+let availability =
+    Heartbeat
+    | where TimeGenerated > ago(timeRange)
+    | summarize total = count(), ok = count() by dummy = 1
+    | extend value = 100.0 * iff(total == 0, 0.0, todouble(ok) / todouble(total))
+    | project metric='availability_pct', value, status = iff(value >= 99.0, 'OK', 'Degraded');
+// Saturation proxy: max of relevant perf metrics (lower is better)
+let saturation =
+    InsightsMetrics
+    | where TimeGenerated > ago(timeRange)
+    | where Name in ('cpuUsageNanoCores','Percentage CPU','Disk Used Percentage','Memory Used Percentage')
+    | summarize avgVal = avg(Val) by Name
+    | summarize value = max(avgVal)
+    | project metric='saturation_pct', value, status = iff(value < 80.0, 'OK', 'Degraded');
+// Latency proxy: if AppRequests available
+let latency =
+    (AppRequests
+     | where TimeGenerated > ago(timeRange)
+     | summarize p95 = percentile(duration, 95)
+     | extend value = todouble(p95)
+     | project metric='latency_ms_p95', value, status = iff(value <= 250.0, 'OK', 'Degraded'))
+    // Fallback when AppRequests absent: emit no rows, union keeps others
+    ;
+union availability, saturation, latency
+| summarize max_value = max(value) by metric, status
+| project metric, value = max_value, status

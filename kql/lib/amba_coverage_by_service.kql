@@ -1,0 +1,24 @@
+/// lib_amba_coverage_by_service
+/// Summary: Coverage summary aligned to AMBA taxonomy. Intended to join ARG alert rule metadata and AMBA mapping.
+/// Params:
+///   ambaMapping: dynamic (serviceCategory -> required rules)
+///   timeRange: timespan (default 24h)
+/// Output:
+///   ServiceCategory:string, total:long, gaps:long, disabled:long
+///
+/// Sample:
+/// // let ambaMapping = dynamic({ "vm": ["HeartbeatMissing","GuestCPUHigh"] });
+/// // let timeRange = 24h;
+/// // lib_amba_coverage_by_service();
+let timeRange = iff(isnull(timeRange), 24h, timeRange);
+// Placeholder datatable. In workbook wiring, replace with ARG-joined dataset of alert rules and enabled state.
+datatable(ServiceCategory:string, AlertRuleName:string, Enabled:bool)
+[
+    // Example rows:
+    // 'vm', 'HeartbeatMissing', true,
+    // 'vm', 'GuestCPUHigh', false,
+    // 'aks', 'NodeNotReady', true
+]
+| summarize total = count(), disabled = sum(toint(not(Enabled))) by ServiceCategory
+| extend gaps = disabled
+| project ServiceCategory, total, gaps, disabled

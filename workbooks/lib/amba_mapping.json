@@ -1,0 +1,41 @@
+{
+  "vm": {
+    "requiredAlerts": [
+      "HeartbeatMissing",
+      "GuestCPUHigh",
+      "GuestMemoryHigh",
+      "VMStoppedUnexpectedly"
+    ]
+  },
+  "aks": {
+    "requiredAlerts": [
+      "NodeNotReady",
+      "PodCrashLooping",
+      "APIErrorRateHigh"
+    ]
+  },
+  "app": {
+    "requiredAlerts": [
+      "AppAvailabilityDegradation",
+      "ServerErrorsHigh"
+    ]
+  },
+  "storage": {
+    "requiredAlerts": [
+      "StorageThrottling",
+      "StorageLatencyHigh"
+    ]
+  },
+  "sql": {
+    "requiredAlerts": [
+      "SqlDTUHigh",
+      "SqlErrorsHigh"
+    ]
+  },
+  "network": {
+    "requiredAlerts": [
+      "GatewayUnavailable",
+      "FirewallDenySpike"
+    ]
+  }
+}

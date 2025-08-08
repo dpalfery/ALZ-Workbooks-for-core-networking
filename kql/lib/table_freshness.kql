@@ -1,0 +1,19 @@
+/// lib_table_freshness
+/// Summary: Computes lastIngested, row counts, and latency per critical table with threshold-based status.
+/// Params:
+///   timeRange: timespan (default 24h)
+/// Output:
+///   TableName:string, lastIngested:datetime, rows:long, latencyMin:long, thresholdMin:long, status:string
+///
+/// Sample:
+/// // let timeRange = 24h;
+/// // lib_table_freshness();
+let timeRange = iff(isnull(timeRange), 24h, timeRange);
+let critical = dynamic(['Heartbeat','InsightsMetrics','AzureActivity','AzureDiagnostics']);
+union withsource=TableName Heartbeat, InsightsMetrics, AzureActivity, AzureDiagnostics
+| where TimeGenerated > ago(timeRange)
+| summarize lastIngested = max(TimeGenerated), rows = count() by TableName
+| extend latencyMin = tolong(datetime_diff('minute', now(), lastIngested) * -1)
+| extend thresholdMin = tolong(case(TableName == 'Heartbeat', 15, TableName == 'AzureActivity', 60, 30))
+| extend status = iff(latencyMin > thresholdMin, 'Warning', 'OK')
+| project TableName, lastIngested, rows, latencyMin, thresholdMin, status

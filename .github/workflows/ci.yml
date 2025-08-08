@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.7
+
+      - name: JSON structure checks
+        shell: pwsh
+        run: |
+          pwsh -File scripts/validate_workbook_json.ps1 -Path workbooks/templates/core_workbook.json
+
+      - name: KQL lint
+        shell: pwsh
+        run: |
+          pwsh -File scripts/kql_lint.ps1 -Path kql/lib
+
+      - name: Terraform fmt/validate
+        shell: pwsh
+        run: |
+          pwsh -File scripts/tf_validate.ps1
+
+      - name: Optional plan example
+        if: ${{ vars.RUN_TF_PLAN == 'true' || env.RUN_TF_PLAN == 'true' }}
+        shell: pwsh
+        run: |
+          pwsh -File scripts/tf_plan_example.ps1

@@ -1,0 +1,4 @@
+﻿Heartbeat
+| where TimeGenerated > ago(24h)
+| summarize lastSeen=max(TimeGenerated) by ResourceId
+| project ResourceId, lastSeen

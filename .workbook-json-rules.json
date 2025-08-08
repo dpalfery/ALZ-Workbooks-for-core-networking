@@ -1,0 +1,13 @@
+{
+  "required_parameters": [
+    "timeRange",
+    "mgScope",
+    "subscriptionIds",
+    "resourceGroups",
+    "environmentTag",
+    "workspaces",
+    "serviceToggles"
+  ],
+  "require_hidden_steps": true,
+  "require_theming_metadata": true
+}

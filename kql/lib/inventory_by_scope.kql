@@ -1,0 +1,28 @@
+/// lib_inventory_by_scope
+/// Summary: Inventory of resources grouped by Subscription and ResourceType with last seen time, deduped by ResourceId across workspaces.
+/// Params:
+///   mgPath: string (optional path of target Management Group)
+///   subscriptionIds: dynamic (array of subscription IDs)
+///   resourceGroups: dynamic (array of resource group names)
+///   timeRange: timespan (e.g., 24h)
+///   workspaceIds: dynamic (array of LAW ids)
+/// Output:
+///   SubscriptionId:string, ResourceType:string, Count:long, LastSeen:datetime
+///
+/// Sample invocation:
+/// // let mgPath = '/providers/Microsoft.Management/managementGroups/contoso-mg';
+/// // let subscriptionIds = dynamic(['00000000-0000-0000-0000-000000000000']);
+/// // let resourceGroups = dynamic(['rg1','rg2']);
+/// // let timeRange = 24h;
+/// // let workspaceIds = dynamic(['/subscriptions/.../workspaces/w1','/subscriptions/.../workspaces/w2']);
+/// // lib_inventory_by_scope();
+///
+/// Note: This LA fragment approximates inventory via Heartbeat presence. ARG-driven inventory should be blended in workbook step wiring.
+let timeRange = iff(isnull(timeRange), 24h, timeRange);
+Heartbeat
+| where TimeGenerated > ago(timeRange)
+| summarize lastSeen = max(TimeGenerated) by ResourceId
+| extend SubscriptionId = tostring(extract(@'/subscriptions/([^/]+)/', 1, ResourceId))
+| extend ResourceType  = tostring(extract(@'/providers/([^/]+/[^/]+)/', 1, ResourceId))
+| summarize Count = count(), LastSeen = max(lastSeen) by SubscriptionId, ResourceType
+| project SubscriptionId, ResourceType, Count, LastSeen

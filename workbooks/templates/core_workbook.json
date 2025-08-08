@@ -1,0 +1,334 @@
+{
+  "version": "Notebook/1.0",
+  "metadata": {
+    "name": "LZ SRE Core",
+    "category": "workbook",
+    "description": "Azure Landing Zone SRE core workbook with parameters, hidden KQL fragments, and panels.",
+    "theming": {
+      "darkTheme": true,
+      "highContrast": true
+    }
+  },
+  "performanceGuardrails": {
+    "warnThresholdRowCount": 200000,
+    "adviseOnSlowQuerySeconds": 30,
+    "limitSeriesCount": 50
+  },
+  "parameters": {
+    "timeRange": {
+      "type": "timespan",
+      "default": "P1D",
+      "description": "Time range (ISO8601 duration). Defaults to last 24h."
+    },
+    "mgScope": {
+      "type": "string",
+      "default": "",
+      "description": "Management group path, e.g. /providers/Microsoft.Management/managementGroups/contoso-mg"
+    },
+    "subscriptionIds": {
+      "type": "array",
+      "default": [],
+      "description": "List of subscription IDs in scope"
+    },
+    "resourceGroups": {
+      "type": "array",
+      "default": [],
+      "description": "List of resource group names in scope"
+    },
+    "environmentTag": {
+      "type": "string",
+      "default": "prod,nonprod",
+      "description": "Environment tag filter values (comma separated)"
+    },
+    "workspaces": {
+      "type": "array",
+      "default": ["${workspace1}", "${workspace2}"],
+      "description": "Log Analytics workspace resource IDs"
+    },
+    "serviceToggles": {
+      "type": "object",
+      "default": {
+        "vm": true,
+        "aks": true,
+        "app": true,
+        "storage": true,
+        "sql": true,
+        "network": true
+      },
+      "description": "Enable/disable service panels"
+    },
+    "sloDefaults": {
+      "type": "object",
+      "default": {
+        "vm": { "availabilityPct": 99.5, "latencyMs": 250, "errorRatePct": 1 },
+        "aks": { "availabilityPct": 99.5, "latencyMs": 250, "errorRatePct": 1 },
+        "app": { "availabilityPct": 99.9, "latencyMs": 200, "errorRatePct": 0.5 },
+        "storage": { "availabilityPct": 99.9, "latencyMs": 100, "errorRatePct": 0.5 },
+        "sql": { "availabilityPct": 99.9, "latencyMs": 100, "errorRatePct": 0.5 },
+        "network": { "availabilityPct": 99.9, "latencyMs": 100, "errorRatePct": 0.5 }
+      },
+      "description": "Default SLO targets per service"
+    }
+  },
+  "hiddenSteps": [
+    {
+      "name": "lib_inventory_by_scope",
+      "kqlRef": "kql/lib/inventory_by_scope.kql",
+      "description": "Inventory of resources grouped by subscription and resource type; dedupe by ResourceId."
+    },
+    {
+      "name": "lib_table_freshness",
+      "kqlRef": "kql/lib/table_freshness.kql",
+      "description": "Freshness and latency per critical table."
+    },
+    {
+      "name": "lib_amba_coverage_by_service",
+      "kqlRef": "kql/lib/amba_coverage_by_service.kql",
+      "description": "AMBA baseline coverage summary using mapping dataset."
+    },
+    {
+      "name": "lib_service_health_sli",
+      "kqlRef": "kql/lib/service_health_sli.kql",
+      "description": "Compute SLIs for selected service."
+    },
+    {
+      "name": "lib_slo_burn_rate",
+      "kqlRef": "kql/lib/slo_burn_rate.kql",
+      "description": "Burn rate and remaining budget over a window."
+    },
+    {
+      "name": "lib_policy_compliance_summary",
+      "kqlRef": "kql/lib/policy_compliance_summary.kql",
+      "description": "Policy compliance summary (ARG-backed at wiring)."
+    }
+  ],
+  "rbac": {
+    "readOnlyBehavior": "preventEditsAllowParameterChanges",
+    "exportFidelity": "includeAllParametersAndBindings"
+  },
+  "items": [
+    {
+      "name": "Parameters",
+      "type": "parameters",
+      "persistInSharedLink": true,
+      "keyboardNavigationOrder": 1,
+      "controls": [
+        { "id": "timeRange", "label": "Time Range", "parameter": "timeRange" },
+        { "id": "mgScope", "label": "Management Group Path", "parameter": "mgScope" },
+        { "id": "subscriptionIds", "label": "Subscriptions", "parameter": "subscriptionIds" },
+        { "id": "resourceGroups", "label": "Resource Groups", "parameter": "resourceGroups" },
+        { "id": "environmentTag", "label": "Environment Tag", "parameter": "environmentTag" },
+        { "id": "workspaces", "label": "Workspaces", "parameter": "workspaces", "minSelected": 1 },
+        { "id": "serviceToggles", "label": "Service Toggles", "parameter": "serviceToggles" },
+        { "id": "sloDefaults", "label": "SLO Defaults (JSON)", "parameter": "sloDefaults" }
+      ]
+    },
+
+    {
+      "name": "Inventory & Scope Overview",
+      "type": "query",
+      "group": "Overview",
+      "keyboardNavigationOrder": 2,
+      "loadingIndicator": true,
+      "noDataState": {
+        "message": "No resources found for selected scope. Adjust filters or verify data collection.",
+        "showWhenRows": 0
+      },
+      "kqlInline": "// Multi-workspace union with explicit workspace() binding and dedup\nlet timeRange = toduration(replace_string('${timeRange}', 'P', ''));\nlet W1 = workspace('${workspace1}');\nlet W2 = workspace('${workspace2}');\nunion isfuzzy=true W1:Heartbeat, W2:Heartbeat\n| where TimeGenerated > ago(timeRange)\n| summarize lastSeen = max(TimeGenerated) by ResourceId\n| extend SubscriptionId = tostring(extract('/subscriptions/([^/]+)/', 1, ResourceId))\n| extend ResourceType = tostring(extract('/providers/([^/]+/[^/]+)/', 1, ResourceId))\n| summarize Count = count(), LastSeen = max(lastSeen) by SubscriptionId, ResourceType\n| project SubscriptionId, ResourceType, Count, LastSeen\n| order by Count desc\n",
+      "advisories": [
+        {
+          "condition": "rows > 200000",
+          "message": "Row count exceeds 200,000. Narrow filters to prevent timeouts."
+        }
+      ]
+    },
+
+    {
+      "name": "Inventory by MG → Subscription → ResourceType",
+      "type": "arg",
+      "group": "Overview",
+      "keyboardNavigationOrder": 3,
+      "loadingIndicator": true,
+      "argInline": "// ARG placeholder (execution at runtime):\n// Query resources within management group path and group by MG → Subscription → ResourceType\nResources\n| where type !contains 'microsoft.insights/workbooks'\n| summarize Count = count() by managementGroup = '${mgScope}', subscriptionId, type\n| project managementGroup, subscriptionId, resourceType = type, Count\n",
+      "noDataState": {
+        "message": "No resources found under the selected management group.",
+        "showWhenRows": 0
+      }
+    },
+
+    {
+      "name": "Log Ingestion Health & Freshness",
+      "type": "query",
+      "group": "Health",
+      "keyboardNavigationOrder": 4,
+      "loadingIndicator": true,
+      "tooltips": {
+        "latency": "Latency is minutes since lastIngested; threshold varies per table."
+      },
+      "kqlInline": "// Freshness with per-workspace coverage and thresholds\nlet timeRange = toduration(replace_string('${timeRange}', 'P', ''));\nlet W1 = '${workspace1}';\nlet W2 = '${workspace2}';\nlet hb = union (workspace(W1).Heartbeat | extend TableName='Heartbeat', Workspace=W1), (workspace(W2).Heartbeat | extend TableName='Heartbeat', Workspace=W2) | where TimeGenerated > ago(timeRange);\nlet im = union (workspace(W1).InsightsMetrics | extend TableName='InsightsMetrics', Workspace=W1), (workspace(W2).InsightsMetrics | extend TableName='InsightsMetrics', Workspace=W2) | where TimeGenerated > ago(timeRange);\nlet aa = union (workspace(W1).AzureActivity | extend TableName='AzureActivity', Workspace=W1), (workspace(W2).AzureActivity | extend TableName='AzureActivity', Workspace=W2) | where TimeGenerated > ago(timeRange);\nlet ad = union (workspace(W1).AzureDiagnostics | extend TableName='AzureDiagnostics', Workspace=W1), (workspace(W2).AzureDiagnostics | extend TableName='AzureDiagnostics', Workspace=W2) | where TimeGenerated > ago(timeRange);\nunion hb, im, aa, ad\n| summarize lastIngested = max(TimeGenerated), rows = count() by TableName, Workspace\n| extend latencyMin = tolong(datetime_diff('minute', now(), lastIngested) * -1)\n| summarize totalRows = sum(rows), lastIngested = max(lastIngested), workspacesWithData = make_set_if(Workspace, rows > 0) by TableName\n| extend missingWorkspaces = set_difference(pack_array(W1, W2), workspacesWithData)\n| extend thresholdMin = tolong(case(TableName == 'Heartbeat', 15, TableName == 'AzureActivity', 60, 30))\n| extend latencyMin = tolong(datetime_diff('minute', now(), lastIngested) * -1)\n| extend status = iff(latencyMin > thresholdMin, 'Warning', 'OK')\n| extend coverage = case(array_length(missingWorkspaces) == 0, 'Full', array_length(missingWorkspaces) == 1, strcat('Partial (missing ', tostring(missingWorkspaces[0]), ')'), 'Partial (multiple missing)')\n| project TableName, lastIngested, rows = totalRows, latencyMin, thresholdMin, status, coverage, missingWorkspaces\n| order by TableName asc\n",
+      "partialCoverageNote": "If a workspace is missing a critical table, annotate the row as partial and identify the missing workspace(s)."
+    },
+
+    {
+      "name": "Ingestion Errors",
+      "type": "query",
+      "group": "Health",
+      "keyboardNavigationOrder": 5,
+      "loadingIndicator": true,
+      "kqlInline": "// Recent ingestion-related errors from common sources (best-effort)\nlet timeRange = toduration(replace_string('${timeRange}', 'P', ''));\nunion withsource=TableName AzureDiagnostics, AzureActivity\n| where TimeGenerated > ago(timeRange)\n| where tostring(Level) in ('Error','Critical') or ActivityStatus in ('Failed','Fail') or ResultType in ('Fail','Failed','Error') or Message has 'ingest' or OperationName has 'Ingestion'\n| project TimeGenerated, TableName, ResourceId, OperationName, Category, ActivityStatus, ResultType, Level\n| top 100 by TimeGenerated desc\n"
+    },
+
+    {
+      "name": "AMBA Baseline Alert Coverage",
+      "type": "query",
+      "group": "Alerts",
+      "keyboardNavigationOrder": 6,
+      "loadingIndicator": true,
+      "dataDependencies": [
+        { "path": "workbooks/lib/amba_mapping.json", "description": "Service category to required alerts mapping" }
+      ],
+      "kqlInline": "// Coverage summary placeholder; join to ARG alert rules at runtime.\n// Expected: ServiceCategory, total, gaps, disabled.\ndatatable(ServiceCategory:string, total:long, gaps:long, disabled:long)\n[\n  'VMs', 10, 2, 1,\n  'AKS', 8, 1, 0\n]\n| project ServiceCategory, total, gaps, disabled\n",
+      "notes": "Disabled rules count as gaps; recommend tuning if firing frequently (noisy heuristic to be added)."
+    },
+    {
+      "name": "ARG Alert Rules Summary",
+      "type": "arg",
+      "group": "Alerts",
+      "keyboardNavigationOrder": 7,
+      "loadingIndicator": true,
+      "argInline": "// ARG placeholder: summarize alert rules and disabled state, map to AMBA categories at runtime\nResources\n| where type in~ ('microsoft.insights/scheduledqueryrules', 'microsoft.insights/scheduledqueryrulesv2', 'microsoft.insights/metricalerts')\n| extend Enabled = tostring(properties.enabled)\n| extend ServiceCategory = 'map-with-amba-mapping'\n| summarize total=count(), disabled=countif(Enabled == 'false') by ServiceCategory\n| extend gaps = disabled\n| project ServiceCategory, total, gaps, disabled\n"
+    },
+    {
+      "name": "Noisy Alerts Heuristic (optional)",
+      "type": "query",
+      "group": "Alerts",
+      "keyboardNavigationOrder": 8,
+      "loadingIndicator": true,
+      "kqlInline": "// If Alert table available, surface noisy alerts for tuning\nAlert\n| where TimeGenerated > ago(14d)\n| summarize fires = count() by AlertRuleName\n| where fires > 50\n| project AlertRuleName, fires\n"
+    },
+
+    {
+      "name": "Service Health SLIs (Tiles)",
+      "type": "query",
+      "group": "Health",
+      "keyboardNavigationOrder": 9,
+      "loadingIndicator": true,
+      "noDataState": {
+        "message": "No telemetry found; tile grayed out.",
+        "whenNoTelemetry": true
+      },
+      "kqlInline": "// Compute availability and saturation proxies\nlet timeRange = toduration(replace_string('${timeRange}', 'P', ''));\nlet availability = Heartbeat\n| where TimeGenerated > ago(timeRange)\n| summarize total = count(), ok = count() by dummy = 1\n| extend value = 100.0 * iff(total == 0, 0.0, todouble(ok) / todouble(total))\n| project metric='availability_pct', value, status = iff(value >= 99.0, 'OK', 'Degraded');\nlet saturation = InsightsMetrics\n| where TimeGenerated > ago(timeRange)\n| where Name in ('cpuUsageNanoCores','Percentage CPU','Disk Used Percentage','Memory Used Percentage')\n| summarize avg = avg(Val) by Name\n| summarize value = max(avg)\n| project metric='saturation_pct', value, status = iff(value < 80.0, 'OK', 'Degraded');\nunion availability, saturation\n| project metric, value, status\n"
+    },
+
+    {
+      "name": "VM Health Drilldown",
+      "type": "query",
+      "group": "Health",
+      "showWhen": "serviceToggles.vm == true",
+      "keyboardNavigationOrder": 10,
+      "loadingIndicator": true,
+      "kqlInline": "// VM availability time series and top offenders\nlet timeRange = toduration(replace_string('${timeRange}', 'P', ''));\nlet series = Heartbeat\n| where TimeGenerated > ago(timeRange)\n| summarize beats = count() by ResourceId, bin(TimeGenerated, 5m);\nlet totals = Heartbeat\n| where TimeGenerated > ago(timeRange)\n| summarize total = count() by ResourceId;\nseries\n| join kind=leftouter totals on ResourceId\n| extend availability_pct = 100.0 * iff(total == 0, 0.0, todouble(beats)/todouble(total))\n| project TimeGenerated, ResourceId, availability_pct\n;\nInsightsMetrics\n| where TimeGenerated > ago(timeRange)\n| where Name in ('Percentage CPU','Disk Used Percentage','Memory Used Percentage')\n| summarize avgVal = avg(Val) by _ResourceId, Name\n| summarize peak = max(avgVal) by _ResourceId\n| top 10 by peak desc\n| project TopOffender=_ResourceId, peak\n"
+    },
+
+    {
+      "name": "AKS Health Drilldown",
+      "type": "query",
+      "group": "Health",
+      "showWhen": "serviceToggles.aks == true",
+      "keyboardNavigationOrder": 11,
+      "loadingIndicator": true,
+      "kqlInline": "// AKS node/pod health\nlet timeRange = toduration(replace_string('${timeRange}', 'P', ''));\nlet nodes = KubeNodeInventory\n| where TimeGenerated > ago(timeRange)\n| summarize not_ready = countif(ClusterNodeStatus != 'Ready') by ClusterName;\nlet pods = KubePodInventory\n| where TimeGenerated > ago(timeRange)\n| summarize restarts = max(todouble(RestartCount)) by PodName\n| top 10 by restarts desc;\nnodes | project ClusterName, not_ready\n;\npods  | project TopPod=PodName, restarts\n"
+    },
+
+    {
+      "name": "App Service Health Drilldown",
+      "type": "query",
+      "group": "Health",
+      "showWhen": "serviceToggles.app == true",
+      "keyboardNavigationOrder": 12,
+      "loadingIndicator": true,
+      "kqlInline": "// App availability and errors\nlet timeRange = toduration(replace_string('${timeRange}', 'P', ''));\nlet latency = AppRequests\n| where TimeGenerated > ago(timeRange)\n| summarize p95 = percentile(duration, 95);\nlet errors = AppRequests\n| where TimeGenerated > ago(timeRange) and success == false\n| summarize fails = count() by tostring(operation_Name)\n| top 10 by fails desc;\nlatency | project metric='latency_ms_p95', value=todouble(p95)\n;\nerrors  | project TopOperation=operation_Name, fails\n"
+    },
+
+    {
+      "name": "Storage Health Drilldown",
+      "type": "query",
+      "group": "Health",
+      "showWhen": "serviceToggles.storage == true",
+      "keyboardNavigationOrder": 13,
+      "loadingIndicator": true,
+      "kqlInline": "// Storage saturation proxy\nlet timeRange = toduration(replace_string('${timeRange}', 'P', ''));\nInsightsMetrics\n| where TimeGenerated > ago(timeRange)\n| where Name in ('UsedCapacity','Transactions','SuccessE2ELatency') or Namespace has 'Storage'\n| summarize avgVal = avg(Val) by _ResourceId, Name\n| summarize peak = max(avgVal) by _ResourceId\n| top 10 by peak desc\n| project TopStorage=_ResourceId, peak\n"
+    },
+
+    {
+      "name": "SQL Health Drilldown",
+      "type": "query",
+      "group": "Health",
+      "showWhen": "serviceToggles.sql == true",
+      "keyboardNavigationOrder": 14,
+      "loadingIndicator": true,
+      "kqlInline": "// SQL saturation/error proxy\nlet timeRange = toduration(replace_string('${timeRange}', 'P', ''));\nInsightsMetrics\n| where TimeGenerated > ago(timeRange)\n| where Name in ('cpu_percent','dtu_consumption_percent','physical_data_read_bytes')\n| summarize avgVal = avg(Val) by _ResourceId, Name\n| summarize peak = max(avgVal) by _ResourceId\n| top 10 by peak desc\n| project TopSql=_ResourceId, peak\n"
+    },
+
+    {
+      "name": "Network Health Drilldown",
+      "type": "query",
+      "group": "Health",
+      "showWhen": "serviceToggles.network == true",
+      "keyboardNavigationOrder": 15,
+      "loadingIndicator": true,
+      "kqlInline": "// Network diagnostics proxy (firewalls/gateways)\nlet timeRange = toduration(replace_string('${timeRange}', 'P', ''));\nAzureDiagnostics\n| where TimeGenerated > ago(timeRange)\n| where Category has_any ('Firewall','Gateway') and Level in ('Error','Critical')\n| summarize errors = count() by ResourceId\n| top 10 by errors desc\n| project TopNetworkResource=ResourceId, errors\n"
+    },
+
+    {
+      "name": "SLO & Error Budget",
+      "type": "query",
+      "group": "SLO",
+      "keyboardNavigationOrder": 16,
+      "loadingIndicator": true,
+      "export": {
+        "include": ["thresholds", "timeRange"]
+      },
+      "kqlInline": "// Simple SLO budget computation using AppRequests if available\nlet target = 0.995;\nlet window = 7d;\nlet errors = toscalar(AppRequests | where TimeGenerated > ago(window) | where success == false | count);\nlet total = toscalar(AppRequests | where TimeGenerated > ago(window) | count);\nlet err_rate = todouble(errors) / todouble(total);\nlet budget = 1.0 - target;\nprint burn_rate = (err_rate / budget), remaining_budget = (1.0 - err_rate)\n"
+    },
+    {
+      "name": "SLO Burn Rate (7/30/90 days)",
+      "type": "query",
+      "group": "SLO",
+      "keyboardNavigationOrder": 17,
+      "loadingIndicator": true,
+      "kqlInline": "// Multi-window burn rate summary; highlight at-risk when burn_rate > 2\nlet target = 0.995;\nlet windows = datatable(win:timespan) [7d, 30d, 90d];\nwindows\n| extend errors = toscalar(AppRequests | where TimeGenerated > ago(win) | where success == false | count)\n| extend total  = toscalar(AppRequests | where TimeGenerated > ago(win) | count)\n| extend err_rate = todouble(errors) / todouble(total)\n| extend budget = 1.0 - target\n| extend burn_rate = err_rate / budget\n| project window=win, burn_rate, remaining_budget = (1.0 - err_rate), at_risk = iff(burn_rate > 2.0, 'Yes', 'No')\n"
+    },
+
+    {
+      "name": "Policy & Diagnostics Compliance Summary",
+      "type": "query",
+      "group": "Compliance",
+      "keyboardNavigationOrder": 18,
+      "loadingIndicator": true,
+      "kqlInline": "// Placeholder for policy compliance; ARG policyStates should supply data in deployment\ndatatable(Initiative:string, Compliant:long, NonCompliant:long)\n[\n  'Security Baseline', 900, 50,\n  'Diagnostics Required', 850, 150\n]\n| extend NonCompliancePct = todouble(NonCompliant) / todouble(Compliant + NonCompliant) * 100.0\n| project Initiative, Compliant, NonCompliant, NonCompliancePct\n| order by NonCompliancePct desc\n",
+      "thresholds": {
+        "initiativeNonCompliancePctWarn": 10
+      },
+      "criticalChecks": [
+        "Missing subscription Activity Logs should surface a critical warning"
+      ]
+    },
+    {
+      "name": "Diagnostics Coverage Gaps",
+      "type": "arg",
+      "group": "Compliance",
+      "keyboardNavigationOrder": 19,
+      "loadingIndicator": true,
+      "argInline": "// ARG placeholder: list monitored resource types missing diagnostic settings\nprint note='Diagnose missing diagnostic settings via ARG at runtime.'\n"
+    },
+    {
+      "name": "Missing Subscription Activity Logs",
+      "type": "arg",
+      "group": "Compliance",
+      "keyboardNavigationOrder": 20,
+      "loadingIndicator": true,
+      "argInline": "// ARG placeholder: detect subscriptions without activity log diagnostic settings\nprint note='Surface critical warning when subscription Activity Logs are not collected.'\n"
+    }
+  ]
+}

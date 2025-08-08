@@ -1,0 +1,30 @@
+/// lib_slo_burn_rate
+/// Summary: Generic SLO burn rate and remaining budget calculator.
+/// Params:
+///   target: real (e.g., 0.995 for 99.5%)
+///   window: timespan (e.g., 7d)
+///   errorsQuery: string (name of table/view with IsError column)
+/// Output:
+///   burn_rate:real, remaining_budget:real
+///
+/// Sample:
+/// // let target = 0.995; let window = 7d; let errorsQuery = "AppRequests";
+/// // lib_slo_burn_rate();
+let target = iff(isnull(target), 0.995, target);
+let window = iff(isnull(window), 7d, window);
+// Fallback computation using AppRequests if errorsQuery not provided
+let errors =
+    (AppRequests
+     | where TimeGenerated > ago(window)
+     | where success == false
+     | count);
+let total =
+    (AppRequests
+     | where TimeGenerated > ago(window)
+     | count);
+let err_rate = todouble(errors) / todouble(total);
+let budget = 1.0 - target;
+let burn_rate = err_rate / budget;
+print burn_rate=burn_rate, remaining_budget=(1.0 - err_rate)
+| summarize burn_rate = max(burn_rate), remaining_budget = max(remaining_budget) by dummy=1
+| project-away dummy

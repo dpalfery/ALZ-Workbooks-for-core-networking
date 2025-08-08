@@ -1,0 +1,5 @@
+﻿Heartbeat
+| where TimeGenerated > ago(24h)
+| where Computer != "" // no summarize nor bin
+| project a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q
+| take 999999
