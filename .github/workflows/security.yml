@@ -229,7 +229,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: trivy-sarif-${{ matrix.path }}
+          name: trivy-sarif-${{ hashFiles(matrix.path) }}-${{ strategy.job-index }}
           path: trivy.sarif
 
       - name: Upload .trivyignore (if present)
@@ -243,7 +243,10 @@ jobs:
       - name: Summary
         if: always()
         run: |
-          echo "Trivy SARIF artifact: trivy-sarif-${{ matrix.path }}" >> $GITHUB_STEP_SUMMARY
+          CLEAN_PATH="${{ matrix.path }}"
+          CLEAN_PATH="${CLEAN_PATH//\//-}"
+          echo "Trivy SARIF artifact: trivy-sarif-${{ hashFiles(matrix.path) }}-${{ strategy.job-index }}" >> $GITHUB_STEP_SUMMARY
+          echo "Path: ${CLEAN_PATH}" >> $GITHUB_STEP_SUMMARY
           if command -v jq >/dev/null 2>&1; then
             echo "Counts by level:" >> $GITHUB_STEP_SUMMARY
             jq -r '[.runs[].results[].level] | group_by(.) | map({level: .[0], count: length})' trivy.sarif >> $GITHUB_STEP_SUMMARY || true
