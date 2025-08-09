@@ -85,7 +85,7 @@ jobs:
 
   noop:
     needs: changes
-    if: ${{ needs.changes.outputs.trivial_docs == 'true' && github.event_name != 'workflow_dispatch' && inputs.force_all != 'true' }}
+    if: ${{ needs.changes.outputs.trivial_docs == 'true' && github.event_name != 'workflow_dispatch' && github.event.inputs.force_all != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Docs-only change - skipping heavy jobs
@@ -96,7 +96,7 @@ jobs:
   tf-dirs:
     name: Discover Terraform directories
     needs: changes
-    if: ${{ needs.changes.outputs.changed_terraform == 'true' || inputs.force_all == 'true' || inputs.force_trivy == 'true' || inputs.force_snyk == 'true' }}
+    if: ${{ needs.changes.outputs.changed_terraform == 'true' || github.event.inputs.force_all == 'true' || github.event.inputs.force_trivy == 'true' || github.event.inputs.force_snyk == 'true' }}
     runs-on: ubuntu-latest
     outputs:
       matrix_json: ${{ steps.set-matrix.outputs.matrix_json }}
@@ -121,7 +121,7 @@ jobs:
 
   lint:
     needs: changes
-    if: ${{ needs.changes.outputs.changed_terraform == 'true' || needs.changes.outputs.changed_powershell == 'true' || inputs.force_all == 'true' || inputs.force_lint == 'true' }}
+    if: ${{ needs.changes.outputs.changed_terraform == 'true' || needs.changes.outputs.changed_powershell == 'true' || github.event.inputs.force_all == 'true' || github.event.inputs.force_lint == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -163,7 +163,7 @@ jobs:
           Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -ErrorAction Stop
 
       - name: PowerShell lint
-        if: ${{ needs.changes.outputs.changed_powershell == 'true' || inputs.force_all == 'true' || inputs.force_lint == 'true' }}
+        if: ${{ needs.changes.outputs.changed_powershell == 'true' || github.event.inputs.force_all == 'true' || github.event.inputs.force_lint == 'true' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
@@ -192,7 +192,7 @@ jobs:
 
   trivy-config:
     needs: [changes, tf-dirs]
-    if: ${{ needs.changes.outputs.changed_terraform == 'true' || inputs.force_all == 'true' || inputs.force_trivy == 'true' }}
+    if: ${{ needs.changes.outputs.changed_terraform == 'true' || github.event.inputs.force_all == 'true' || github.event.inputs.force_trivy == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -251,7 +251,7 @@ jobs:
 
   trivy-sarif-upload:
     needs: trivy-config
-    if: ${{ env.UPLOAD_SARIF == 'true' && !cancelled() }}
+    if: ${{ vars.UPLOAD_SARIF == 'true' && !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -274,7 +274,7 @@ jobs:
 
   snyk-iac:
     needs: [changes, tf-dirs]
-    if: ${{ needs.changes.outputs.changed_terraform == 'true' || inputs.force_all == 'true' || inputs.force_snyk == 'true' }}
+    if: ${{ needs.changes.outputs.changed_terraform == 'true' || github.event.inputs.force_all == 'true' || github.event.inputs.force_snyk == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -284,26 +284,32 @@ jobs:
           token: ${{ secrets.SNYK_TOKEN }}
 
       - name: 'Guard: missing SNYK_TOKEN (enforced)'
-        if: ${{ secrets.SNYK_TOKEN == '' && vars.ALLOW_SNYK_SKIP != 'true' }}
+        if: ${{ env.SNYK_TOKEN == '' && vars.ALLOW_SNYK_SKIP != 'true' }}
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           echo "SNYK_TOKEN is not set; set repository secret or set org/repo variable ALLOW_SNYK_SKIP='true' to bypass." >> $GITHUB_STEP_SUMMARY
           exit 1
 
       - name: 'Guard: missing SNYK_TOKEN (skip allowed)'
-        if: ${{ secrets.SNYK_TOKEN == '' && vars.ALLOW_SNYK_SKIP == 'true' }}
+        if: ${{ env.SNYK_TOKEN == '' && vars.ALLOW_SNYK_SKIP == 'true' }}
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           echo "Snyk IaC scan skipped due to missing SNYK_TOKEN and ALLOW_SNYK_SKIP='true'." >> $GITHUB_STEP_SUMMARY
           exit 0
 
       - name: Snyk IaC test
-        if: ${{ secrets.SNYK_TOKEN != '' }}
+        if: ${{ env.SNYK_TOKEN != '' }}
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           snyk iac test terraform/ --severity-threshold=${{ env.SNYK_SEVERITY_THRESHOLD }} --sarif-file-output=snyk-iac.sarif
 
       - name: Upload Snyk SARIF
-        if: ${{ always() && secrets.SNYK_TOKEN != '' }}
+        if: ${{ always() && env.SNYK_TOKEN != '' }}
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         uses: actions/upload-artifact@v4
         with:
           name: snyk-iac-sarif
@@ -323,7 +329,7 @@ jobs:
 
   snyk-sarif-upload:
     needs: snyk-iac
-    if: ${{ env.UPLOAD_SARIF == 'true' && !cancelled() }}
+    if: ${{ vars.UPLOAD_SARIF == 'true' && !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -344,7 +350,7 @@ jobs:
 
   trufflehog:
     needs: changes
-    if: ${{ inputs.force_all == 'true' || inputs.force_trufflehog == 'true' || github.event_name == 'push' || github.event_name == 'pull_request' }}
+    if: ${{ github.event.inputs.force_all == 'true' || github.event.inputs.force_trufflehog == 'true' || github.event_name == 'push' || github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
