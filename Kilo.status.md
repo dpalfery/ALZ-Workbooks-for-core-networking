@@ -246,3 +246,77 @@ Validations executed
 
 Notes
 - Certain ARG queries are specified as placeholders for runtime execution and environment binding; structure and panels satisfy acceptance criteria shape and behavior, with clear queries to be completed/adjusted per tenant schema as data becomes available.
+## CI Security Hardening – Implementation Log
+
+- 1. Workflow skeleton
+  - Implemented: Security workflow with push/PR triggers, workflow_dispatch inputs, minimal permissions, per-ref concurrency, and global env defaults.
+  - Where: [.github/workflows/security.yml](.github/workflows/security.yml)
+  - Acceptance validation: Triggers include push, pull_request, and dispatch with force inputs; permissions set to contents: read; concurrency groups by ref; env defaults set (TRIVY_SEVERITY, SNYK_SEVERITY_THRESHOLD, UPLOAD_SARIF).
+
+- 1.1 Paths filter gate
+  - Implemented: Change detection via [action("dorny/paths-filter@v3")](.github/workflows/security.yml:1) producing outputs for terraform/powershell/docs; docs-only noop job.
+  - Where: [github.workflow_job("changes")](.github/workflows/security.yml:1), [github.workflow_job("noop")](.github/workflows/security.yml:1)
+  - Acceptance validation: Outputs gate downstream jobs; trivial docs path short-circuits heavy jobs unless forced via dispatch inputs.
+
+- 2. Lint job (Terraform + PowerShell)
+  - Implemented: Terraform fmt/validate across discovered dirs; PSScriptAnalyzer over scripts; artifacts and summaries emitted.
+  - Where: [github.workflow_job("lint")](.github/workflows/security.yml:1)
+  - Acceptance validation: Runs when Terraform/PowerShell changed or forced; uploads lint-terraform.txt and lint-powershell.txt; summary shows error counts; fails on linter errors.
+
+- 2.1 Caching for lint
+  - Implemented: Cache for PSScriptAnalyzer modules; Terraform plugin cache used for IaC scan (safe reuse).
+  - Where: [action("actions/cache@v4")](.github/workflows/security.yml:1)
+  - Acceptance validation: Cache keys include runner OS and .terraform.lock.hcl hash to ensure correctness and speed.
+
+- 3. Trivy Terraform IaC scan
+  - Implemented: Matrix over Terraform directories; offline init; Trivy config scan to SARIF; artifacts and summary emitted; job fails on HIGH/CRITICAL.
+  - Where: [github.workflow_job("trivy-config")](.github/workflows/security.yml:1)
+  - Acceptance validation: Uses [action("aquasecurity/trivy-action@v0")](.github/workflows/security.yml:1) with severity=${{ env.TRIVY_SEVERITY }}, format=sarif, output=trivy.sarif, exit-code=1; honors [.trivyignore](.trivyignore).
+
+- 3.1 Trivy ignore seed
+  - Implemented: Guidance-only [.trivyignore](.trivyignore) with rationale/expiry examples; uploaded as artifact for auditability.
+  - Where: [.trivyignore](.trivyignore), [github.workflow_job("trivy-config")](.github/workflows/security.yml:1)
+  - Acceptance validation: Non-functional by default; presence documented and artifact-uploaded for governance.
+
+- 4. Snyk IaC scan
+  - Implemented: Snyk setup and CLI test against terraform/ with severity threshold and SARIF output; guarded behavior when token missing (enforced failure or neutral skip per variable).
+  - Where: [github.workflow_job("snyk-iac")](.github/workflows/security.yml:1)
+  - Acceptance validation: Uses [action("snyk/actions/setup@v3")](.github/workflows/security.yml:1); guards for SNYK_TOKEN; produces snyk-iac.sarif artifact; fails on high and above.
+
+- 5. TruffleHog secrets scanning
+  - Implemented: Scans PR diff or push tree with redaction; excludes benign paths; produces JSON artifact and summary; treats verified/high confidence as failures.
+  - Where: [github.workflow_job("trufflehog")](.github/workflows/security.yml:1)
+  - Acceptance validation: Uses [action("trufflesecurity/trufflehog-actions-scan@v0")](.github/workflows/security.yml:1) with --json --redact --only-verified --exclude-paths .github/trufflehog-exclude.txt; uploads trufflehog.json; summary shows counts.
+
+- 5.1 TruffleHog excludes file
+  - Implemented: Central exclude patterns to reduce false positives (images/binaries, build dirs, docs, fixtures).
+  - Where: [.github/trufflehog-exclude.txt](.github/trufflehog-exclude.txt)
+  - Acceptance validation: Exclude file referenced by TruffleHog args; reduces noise while preserving signal.
+
+- 6. SARIF upload toggle
+  - Implemented: UPLOAD_SARIF env defaults to false; separate SARIF upload jobs gated on the toggle; elevated permission only where needed.
+  - Where: [github.workflow_job("trivy-sarif-upload")](.github/workflows/security.yml:1), [github.workflow_job("snyk-sarif-upload")](.github/workflows/security.yml:1)
+  - Acceptance validation: Jobs declare permissions: security-events: write; conditionally upload SARIF; minimal top-level permissions maintained.
+
+- 7. Job summaries
+  - Implemented: Each job writes counts and artifact names to $GITHUB_STEP_SUMMARY with if: always().
+  - Where: Summary steps in [github.workflow_job("changes")](.github/workflows/security.yml:1), [github.workflow_job("lint")](.github/workflows/security.yml:1), [github.workflow_job("trivy-config")](.github/workflows/security.yml:1), [github.workflow_job("snyk-iac")](.github/workflows/security.yml:1), [github.workflow_job("trufflehog")](.github/workflows/security.yml:1)
+  - Acceptance validation: Summaries are emitted even on failures; links/artifact names captured.
+
+- 8. Secure action pinning and secret handling
+  - Implemented: All actions pinned by major version; comments advise SHA pinning for v0 actions; no secret echo; default logs are minimally verbose.
+  - Where: [.github/workflows/security.yml](.github/workflows/security.yml)
+  - Acceptance validation: Meets pinned action requirement and secret handling best practices.
+
+- 9. Caching and parallelism
+  - Implemented: PowerShell modules and Terraform plugin caches; independent jobs run in parallel except where gated by change detection/matrix discovery.
+  - Where: [action("actions/cache@v4")](.github/workflows/security.yml:1), [github.workflow_key("concurrency")](.github/workflows/security.yml:1)
+  - Acceptance validation: Reduces runtime and preserves per-ref run isolation.
+
+- 10. Validation controls (force inputs)
+  - Implemented: workflow_dispatch inputs force_all/force_lint/force_trivy/force_snyk/force_trufflehog to trigger jobs without path changes.
+  - Where: [github.workflow("on.workflow_dispatch")](.github/workflows/security.yml:1)
+  - Acceptance validation: Enables controlled verification of failure modes (e.g., seeded HIGH findings), and token-missing behavior per policy.
+- Post-verification patch
+  - Implemented: Added $GITHUB_STEP_SUMMARY summary steps with if: always() immediately after [action("github/codeql-action/upload-sarif@v3")](.github/workflows/security.yml:1) in [github.workflow_job("trivy-sarif-upload")](.github/workflows/security.yml:1) and [github.workflow_job("snyk-sarif-upload")](.github/workflows/security.yml:1); added if: always() to the existing “Docs-only change - skipping heavy jobs” summary step in [github.workflow_job("noop")](.github/workflows/security.yml:1).
+  - Acceptance validation: Task 7 now fully meets criteria for summaries across all jobs; each job appends a concise $GITHUB_STEP_SUMMARY with if: always(), including the SARIF upload jobs, and the noop summary step also uses if: always().

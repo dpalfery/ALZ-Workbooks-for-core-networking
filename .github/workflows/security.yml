@@ -1,0 +1,395 @@
+---
+name: Security CI Hardening
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      force_all:
+        description: Force all jobs
+        required: false
+        type: boolean
+        default: false
+      force_lint:
+        description: Force lint
+        required: false
+        type: boolean
+        default: false
+      force_trivy:
+        description: Force Trivy IaC scan
+        required: false
+        type: boolean
+        default: false
+      force_snyk:
+        description: Force Snyk IaC scan
+        required: false
+        type: boolean
+        default: false
+      force_trufflehog:
+        description: Force TruffleHog secrets scan
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TRIVY_SEVERITY: HIGH,CRITICAL
+  SNYK_SEVERITY_THRESHOLD: high
+  UPLOAD_SARIF: 'false'
+  TF_PLUGIN_CACHE_DIR: ~/.terraform.d/plugin-cache
+  PWSH_MODULES_PATH: ~/.local/share/powershell/Modules
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      changed_terraform: ${{ steps.filter.outputs.terraform }}
+      changed_powershell: ${{ steps.filter.outputs.powershell }}
+      trivial_docs: ${{ steps.filter.outputs.trivial_docs }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          list-files: shell
+          filters: |
+            terraform:
+              - 'terraform/**'
+              - 'terraform/modules/**'
+              - 'terraform/examples/**'
+              - '**/.terraform.lock.hcl'
+            powershell:
+              - 'scripts/**/*.ps1'
+            trivial_docs:
+              - 'docs/**'
+              - '**/*.md'
+      - name: Summary
+        if: always()
+        run: |
+          echo "Changed terraform: ${{ steps.filter.outputs.terraform }}" >> $GITHUB_STEP_SUMMARY
+          echo "Changed powershell: ${{ steps.filter.outputs.powershell }}" >> $GITHUB_STEP_SUMMARY
+          echo "Trivial docs only: ${{ steps.filter.outputs.trivial_docs }}" >> $GITHUB_STEP_SUMMARY
+
+  noop:
+    needs: changes
+    if: ${{ needs.changes.outputs.trivial_docs == 'true' && github.event_name != 'workflow_dispatch' && inputs.force_all != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Docs-only change - skipping heavy jobs
+        if: always()
+        run: |
+          echo "Docs-only change detected. Skipping lint and scans." >> $GITHUB_STEP_SUMMARY
+
+  tf-dirs:
+    name: Discover Terraform directories
+    needs: changes
+    if: ${{ needs.changes.outputs.changed_terraform == 'true' || inputs.force_all == 'true' || inputs.force_trivy == 'true' || inputs.force_snyk == 'true' }}
+    runs-on: ubuntu-latest
+    outputs:
+      matrix_json: ${{ steps.set-matrix.outputs.matrix_json }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - id: set-matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t dirs < <(find terraform -type f -name '*.tf' -not -path '*/.terraform/*' -printf '%h\n' | sort -u)
+          include_json=$(printf '%s\n' "${dirs[@]}" | jq -R -s -c 'split("\n") | map(select(length>0)) | map({path:.}) | {include: .}')
+          if [ -z "$include_json" ] || [ "$include_json" = '{"include":[]}' ]; then
+            include_json='{"include":[{"path":"terraform"}]}'
+          fi
+          echo "matrix_json=$include_json" >> "$GITHUB_OUTPUT"
+      - name: Summary
+        if: always()
+        run: |
+          echo "Terraform directories matrix: ${{ steps.set-matrix.outputs.matrix_json }}" >> $GITHUB_STEP_SUMMARY
+
+  lint:
+    needs: changes
+    if: ${{ needs.changes.outputs.changed_terraform == 'true' || needs.changes.outputs.changed_powershell == 'true' || inputs.force_all == 'true' || inputs.force_lint == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Cache PowerShell modules
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PWSH_MODULES_PATH }}
+          key: psmodules-${{ runner.os }}-PSScriptAnalyzer
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform fmt check
+        run: terraform fmt -check -recursive
+
+      - name: Discover Terraform dirs and validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t dirs < <(find terraform -type f -name '*.tf' -not -path '*/.terraform/*' -printf '%h\n' | sort -u)
+          status=0
+          : > lint-terraform.txt
+          for d in "${dirs[@]}"; do
+            echo "## $d" | tee -a lint-terraform.txt
+            (cd "$d" && terraform init -backend=false -input=false -no-color >/dev/null 2>&1)
+            (cd "$d" && terraform validate -no-color) 2>&1 | tee -a lint-terraform.txt || status=1
+          done
+          exit $status
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -ErrorAction Stop
+
+      - name: PowerShell lint
+        if: ${{ needs.changes.outputs.changed_powershell == 'true' || inputs.force_all == 'true' || inputs.force_lint == 'true' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $results = Invoke-ScriptAnalyzer -Path "scripts" -Recurse -Severity Error,Warning -ReportSummary
+          $results | Tee-Object -FilePath lint-powershell.txt
+          if (($results | Where-Object { $_.Severity -eq "Error" }).Count -gt 0) { exit 1 }
+
+      - name: Upload lint artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-logs
+          path: |
+            lint-terraform.txt
+            lint-powershell.txt
+          if-no-files-found: ignore
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          tf_errors=$(grep -E '\bError\b' -c lint-terraform.txt || true)
+          ps_errors=$(grep -E 'Severity\s*:\s*Error' -c lint-powershell.txt || true)
+          echo "Terraform validate errors: ${tf_errors}" >> $GITHUB_STEP_SUMMARY
+          echo "PowerShell analyzer errors: ${ps_errors}" >> $GITHUB_STEP_SUMMARY
+
+  trivy-config:
+    needs: [changes, tf-dirs]
+    if: ${{ needs.changes.outputs.changed_terraform == 'true' || inputs.force_all == 'true' || inputs.force_trivy == 'true' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.tf-dirs.outputs.matrix_json) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Cache Terraform plugins
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tf-plugins-${{ runner.os }}-${{ hashFiles('**/.terraform.lock.hcl') }}
+
+      - name: Terraform init (no backend)
+        working-directory: ${{ matrix.path }}
+        run: terraform init -backend=false -input=false -no-color
+
+      # aquasecurity/trivy-action v0: pin by tag; consider SHA pin for higher assurance
+      - name: Trivy config scan
+        uses: aquasecurity/trivy-action@v0
+        with:
+          scan-type: 'config'
+          scan-ref: ${{ matrix.path }}
+          format: 'sarif'
+          output: 'trivy.sarif'
+          severity: ${{ env.TRIVY_SEVERITY }}
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-sarif-${{ matrix.path }}
+          path: trivy.sarif
+
+      - name: Upload .trivyignore (if present)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-ignore
+          path: .trivyignore
+          if-no-files-found: ignore
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "Trivy SARIF artifact: trivy-sarif-${{ matrix.path }}" >> $GITHUB_STEP_SUMMARY
+          if command -v jq >/dev/null 2>&1; then
+            echo "Counts by level:" >> $GITHUB_STEP_SUMMARY
+            jq -r '[.runs[].results[].level] | group_by(.) | map({level: .[0], count: length})' trivy.sarif >> $GITHUB_STEP_SUMMARY || true
+          fi
+
+  trivy-sarif-upload:
+    needs: trivy-config
+    if: ${{ env.UPLOAD_SARIF == 'true' && !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - name: Download trivy artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: trivy-sarif-*
+          merge-multiple: true
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy.sarif
+      - name: Summary
+        if: always()
+        run: |
+          count=$(ls -1 *.sarif 2>/dev/null | wc -l | tr -d ' ')
+          echo "Trivy SARIF upload completed. Files detected: ${count}" >> $GITHUB_STEP_SUMMARY
+
+  snyk-iac:
+    needs: [changes, tf-dirs]
+    if: ${{ needs.changes.outputs.changed_terraform == 'true' || inputs.force_all == 'true' || inputs.force_snyk == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: snyk/actions/setup@v3
+        with:
+          token: ${{ secrets.SNYK_TOKEN }}
+
+      - name: 'Guard: missing SNYK_TOKEN (enforced)'
+        if: ${{ secrets.SNYK_TOKEN == '' && vars.ALLOW_SNYK_SKIP != 'true' }}
+        run: |
+          echo "SNYK_TOKEN is not set; set repository secret or set org/repo variable ALLOW_SNYK_SKIP='true' to bypass." >> $GITHUB_STEP_SUMMARY
+          exit 1
+
+      - name: 'Guard: missing SNYK_TOKEN (skip allowed)'
+        if: ${{ secrets.SNYK_TOKEN == '' && vars.ALLOW_SNYK_SKIP == 'true' }}
+        run: |
+          echo "Snyk IaC scan skipped due to missing SNYK_TOKEN and ALLOW_SNYK_SKIP='true'." >> $GITHUB_STEP_SUMMARY
+          exit 0
+
+      - name: Snyk IaC test
+        if: ${{ secrets.SNYK_TOKEN != '' }}
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          snyk iac test terraform/ --severity-threshold=${{ env.SNYK_SEVERITY_THRESHOLD }} --sarif-file-output=snyk-iac.sarif
+
+      - name: Upload Snyk SARIF
+        if: ${{ always() && secrets.SNYK_TOKEN != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-iac-sarif
+          path: snyk-iac.sarif
+          if-no-files-found: ignore
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f snyk-iac.sarif ]; then
+            echo "Snyk SARIF artifact: snyk-iac-sarif" >> $GITHUB_STEP_SUMMARY
+            if command -v jq >/dev/null 2>&1; then
+              echo "Counts by level:" >> $GITHUB_STEP_SUMMARY
+              jq -r '[.runs[].results[].level] | group_by(.) | map({level: .[0], count: length})' snyk-iac.sarif >> $GITHUB_STEP_SUMMARY || true
+            fi
+          fi
+
+  snyk-sarif-upload:
+    needs: snyk-iac
+    if: ${{ env.UPLOAD_SARIF == 'true' && !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: snyk-iac-sarif
+          path: .
+      - uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: snyk-iac.sarif
+      - name: Summary
+        if: always()
+        run: |
+          count=$(ls -1 *.sarif 2>/dev/null | wc -l | tr -d ' ')
+          echo "Snyk SARIF upload completed. Files detected: ${count}" >> $GITHUB_STEP_SUMMARY
+
+  trufflehog:
+    needs: changes
+    if: ${{ inputs.force_all == 'true' || inputs.force_trufflehog == 'true' || github.event_name == 'push' || github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # TruffleHog official action; v0 pinned by tag, consider SHA pin
+      - name: TruffleHog scan (PR diff or push tree)
+        id: trufflehog
+        uses: trufflesecurity/trufflehog-actions-scan@v0
+        with:
+          # The action auto-detects event context; we provide conservative args
+          args: >-
+            --json
+            --no-update
+            --redact
+            --only-verified
+            --exclude-paths .github/trufflehog-exclude.txt
+
+      - name: Collect results JSON
+        if: always()
+        run: |
+          # Standardize to trufflehog.json if the action produced a JSON file
+          if [ -f "trufflehog.json" ]; then
+            cp trufflehog.json trufflehog.json
+          elif [ -f "results.json" ]; then
+            cp results.json trufflehog.json
+          else
+            echo "[]" > trufflehog.json
+          fi
+
+      - name: Upload TruffleHog artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trufflehog
+          path: trufflehog.json
+
+      - name: Summarize results
+        if: always()
+        run: |
+          echo "TruffleHog findings (redacted):" >> $GITHUB_STEP_SUMMARY
+          if command -v jq >/dev/null 2>&1; then
+            high=$(jq '[.[] | select(.Verified == true or .confidence == "HIGH")] | length' trufflehog.json)
+            lowmed=$(jq '[.[] | select((.Verified != true) and (.confidence == "LOW" or .confidence == "MEDIUM"))] | length' trufflehog.json)
+            echo "Verified/high-confidence: ${high}" >> $GITHUB_STEP_SUMMARY
+            echo "Low/medium confidence: ${lowmed}" >> $GITHUB_STEP_SUMMARY
+          fi

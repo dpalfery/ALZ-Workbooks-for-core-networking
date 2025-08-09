@@ -1,0 +1,16 @@
+# Trivy Ignore File
+# Purpose: document justified suppressions for IaC (Terraform) config findings.
+# Guidance:
+# - Each suppression MUST include a rationale and an expiry date in ISO format.
+# - Prefer short-lived waivers; review periodically.
+# - Example format:
+#   # Ignore ID: AVD-TF-0001 | Rationale: using approved exception pattern | Expires: 2025-12-31
+#   AVD-TF-0001
+#
+# Repository-specific notes:
+# - Keep this file small; avoid blanket ignores.
+# - Do not commit secrets. Use TruffleHog and reviews to prevent this.
+#
+# Example entries (commented out):
+# # Ignore ID: AVD-TF-0002 | Rationale: managed by platform team | Expires: 2025-06-30
+# # AVD-TF-0002

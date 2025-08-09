@@ -1,0 +1,36 @@
+# Paths/patterns to exclude from TruffleHog scans (globs)
+# Images and binaries
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.ico
+*.pdf
+*.zip
+*.tar
+*.gz
+*.tgz
+*.7z
+*.exe
+*.bin
+*.dll
+
+# Build and dependency folders
+node_modules/**
+vendor/**
+dist/**
+build/**
+out/**
+
+# Terraform internals
+**/.terraform/**
+**/.terraform.lock.hcl
+
+# Documentation
+docs/**
+**/*.md
+
+# Test fixtures (if any)
+**/fixtures/**
+**/testdata/**
