@@ -216,7 +216,7 @@ jobs:
 
       # aquasecurity/trivy-action v0: pin by tag; consider SHA pin for higher assurance
       - name: Trivy config scan
-        uses: aquasecurity/trivy-action@v0
+        uses: aquasecurity/trivy-action@0.32.0
         with:
           scan-type: 'config'
           scan-ref: ${{ matrix.path }}
@@ -279,7 +279,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: snyk/actions/setup@v3
+      - uses: snyk/actions/setup@0.4.0
         with:
           token: ${{ secrets.SNYK_TOKEN }}
 
@@ -360,7 +360,7 @@ jobs:
       # TruffleHog official action; v0 pinned by tag, consider SHA pin
       - name: TruffleHog scan (PR diff or push tree)
         id: trufflehog
-        uses: trufflesecurity/trufflehog-actions-scan@v0
+        uses: trufflesecurity/trufflehog@v3.90.3
         with:
           # The action auto-detects event context; we provide conservative args
           args: >-
