@@ -283,8 +283,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: snyk/actions/setup@0.4.0
-        with:
-          token: ${{ secrets.SNYK_TOKEN }}
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
       - name: 'Guard: missing SNYK_TOKEN (enforced)'
         if: ${{ env.SNYK_TOKEN == '' && vars.ALLOW_SNYK_SKIP != 'true' }}
