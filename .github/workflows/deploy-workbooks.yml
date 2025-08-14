@@ -1,0 +1,99 @@
+name: Deploy Azure Monitor Workbooks (Terraform)
+on:
+  workflow_dispatch:
+    inputs:
+      resource_group_name:
+        description: Target Resource Group name
+        required: true
+        type: string
+      location:
+        description: Azure region (e.g., eastus)
+        required: true
+        type: string
+      workspace1_name:
+        description: Log Analytics Workspace #1 name
+        required: true
+        type: string
+      workspace1_rg:
+        description: Resource Group of Workspace #1
+        required: true
+        type: string
+      workspace2_name:
+        description: Log Analytics Workspace #2 name
+        required: true
+        type: string
+      workspace2_rg:
+        description: Resource Group of Workspace #2
+        required: true
+        type: string
+      management_group_path:
+        description: Optional Mgmt Group path (e.g., /providers/Microsoft.Management/managementGroups/contoso)
+        required: false
+        default: ''
+        type: string
+      tags:
+        description: Optional JSON map of tags, e.g. {"env":"dev","owner":"sre"}
+        required: false
+        default: '{}'
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-workbooks-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ARM_USE_OIDC: true
+  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+jobs:
+  apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: terraform/examples/single_rg
+    env:
+      TF_IN_AUTOMATION: true
+      TF_INPUT: 0
+      TF_VAR_resource_group_name: ${{ inputs.resource_group_name }}
+      TF_VAR_location: ${{ inputs.location }}
+      TF_VAR_management_group_path: ${{ inputs.management_group_path }}
+      TF_VAR_workspace1_name: ${{ inputs.workspace1_name }}
+      TF_VAR_workspace1_rg: ${{ inputs.workspace1_rg }}
+      TF_VAR_workspace2_name: ${{ inputs.workspace2_name }}
+      TF_VAR_workspace2_rg: ${{ inputs.workspace2_rg }}
+      TF_VAR_tags: ${{ inputs.tags }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.ARM_CLIENT_ID }}
+          tenant-id: ${{ env.ARM_TENANT_ID }}
+          subscription-id: ${{ env.ARM_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: terraform plan -input=false -out=tfplan
+
+      - name: Terraform Apply
+        run: terraform apply -input=false -auto-approve tfplan
